@@ -2,7 +2,7 @@
 
 Secure `gh`: a pre-publication guard for GitHub CLI operations.
 
-`sgh` wraps the real GitHub CLI (`gh`) and scans text that is about to be published to GitHub. It is designed for the AI-agent era, where coding assistants can create pull requests, comments, reviews, release notes, and summaries that accidentally include real people, client names, contact details, meeting notes, or other case data.
+`sgh` wraps the real GitHub CLI (`gh`) and also supports `sgh git push` for push-time checks. It scans text that is about to be published to GitHub. It is designed for the AI-agent era, where coding assistants can create pull requests, comments, reviews, release notes, and summaries that accidentally include real people, client names, contact details, meeting notes, or other case data.
 
 The current version is an MVP. It provides deterministic local checks and emits an LLM review packet for semantic judgement. It does not call an LLM by itself yet.
 
@@ -25,6 +25,7 @@ GitHub publication surfaces are broader than repository files. PR comments, revi
 
 `sgh` scans high-risk `gh` operations before dispatching to the real `gh` binary:
 
+- `git push`, when invoked as `sgh git push`
 - `gh pr create|edit|comment|review`
 - `gh issue create|edit|comment`
 - `gh release create|edit`
@@ -42,6 +43,8 @@ It extracts text from command-line options such as:
 - `--description`
 - `--homepage`
 
+For `sgh git push`, it scans the outgoing branch name, commit messages, author/committer metadata, changed filenames, and outgoing diff against the upstream branch.
+
 It also checks arguments for risky raw-data filenames such as `*minutes*`, `*transcript*`, `*議事録*`, and `*.jsonl`.
 
 ## What It Blocks
@@ -58,15 +61,23 @@ Allow public-safe terms with `.leakguard/allowlist.txt`.
 
 ## What It Does Not Do Yet
 
-`sgh` currently does not scan git diffs or commit metadata. That means `sgh pr create` scans the PR title/body you pass through `gh`, but it does not yet inspect:
+`sgh pr create` does not yet automatically inspect the PR branch diff. Use `sgh git push` to scan the outgoing push range before publishing commits.
 
-- `git diff origin/main...HEAD`
+Current `sgh git push` support is local and best-effort. It scans:
+
 - commit messages
 - author/committer metadata
 - branch names
-- tag messages
+- changed filenames
+- outgoing diff against the upstream branch
 
-Those are planned next steps. For now, pair `sgh` with existing git hooks or scanners for repository content.
+It does not yet scan:
+
+- annotated tag messages
+- Git LFS object contents
+- generated CI logs or artifacts
+
+Those are planned next steps. For now, pair `sgh` with existing git hooks or scanners for deeper repository-content coverage.
 
 `sgh` also does not provide a GitHub App, webhook gate, or server-side required check yet. Local wrappers can be bypassed, so organization-wide enforcement will need a server-side layer.
 
@@ -103,6 +114,7 @@ sgh pr comment 123 --body "Looks good"
 sgh pr create --title "Add parser" --body "Small implementation note"
 sgh issue create --title "Bug report" --body "Steps to reproduce..."
 sgh release create v0.1.0 --notes "Initial release"
+sgh git push
 ```
 
 Dry-run without calling GitHub:
@@ -121,6 +133,112 @@ Generate an LLM review packet:
 
 ```sh
 sgh --llm-packet pr comment 123 --body "meeting notes about customer onboarding"
+```
+
+## Dogfood Test
+
+`sgh` was used to create a synthetic test repository and verify both pass and block paths:
+
+```text
+https://github.com/teru-murata/sgh-leak-test
+```
+
+The repository was created through `sgh`:
+
+```sh
+sgh repo create teru-murata/sgh-leak-test \
+  --private \
+  --description "Synthetic test repository for sgh checks" \
+  --source . \
+  --remote origin \
+  --push
+```
+
+A safe issue was published:
+
+```sh
+sgh issue create \
+  --title "sgh smoke test" \
+  --body "Safe test issue for wrapper verification."
+```
+
+A safe comment was published:
+
+```sh
+sgh issue comment 1 --body "Safe comment posted through sgh."
+```
+
+The following synthetic leak cases were blocked before publication.
+
+Email/contact fixture:
+
+```sh
+EMAIL_FIXTURE="person""@""example.com"
+sgh issue comment 1 --body "Contact fixture: ${EMAIL_FIXTURE}"
+```
+
+Result:
+
+```text
+sgh: blocked GitHub operation
+issue-comment:--body — <synthetic-email> — email — Personal/contact email address.
+```
+
+Denylist fixture:
+
+```text
+.leakguard/denylist.txt:
+Synthetic Secret Client
+Example Internal Codename
+```
+
+```sh
+sgh issue comment 1 --body "Synthetic Secret Client should not be published."
+```
+
+Result:
+
+```text
+sgh: blocked GitHub operation
+issue-comment:--body — Synthetic Secret Client — denylist — Term appears in .leakguard/denylist.txt.
+```
+
+Risky filename fixture:
+
+```sh
+sgh release create v0.0.0-test ./sample-transcript.jsonl --notes "Synthetic release test"
+```
+
+Result:
+
+```text
+sgh: blocked GitHub operation
+arg:filename — ./sample-transcript.jsonl — raw-data-filename — Filename matches high-risk pattern '*transcript*'.
+```
+
+Semantic review fixture:
+
+```sh
+sgh --llm-packet issue comment 1 \
+  --body "meeting notes about customer onboarding and internal follow-up"
+```
+
+Result: `sgh` emitted an LLM review packet and did not publish the comment.
+
+GitHub-side verification showed that only the safe issue body and safe comment were present:
+
+```json
+{
+  "title": "sgh smoke test",
+  "body": "Safe test issue for wrapper verification.",
+  "comments": ["Safe comment posted through sgh."]
+}
+```
+
+The README update that documented this dogfood test was committed locally, scanned, and pushed with:
+
+```sh
+sgh git push
 ```
 
 ## Policy Files
@@ -212,9 +330,9 @@ python3 -m py_compile ./sgh
 
 ## Roadmap
 
-- Scan git diff ranges for `sgh pr create`
-- Scan commit messages and commit author/committer metadata
-- Scan branch names and annotated tag messages
+- Scan git diff ranges automatically for `sgh pr create`
+- Improve push-range detection for nonstandard remotes and branches
+- Scan annotated tag messages
 - Add config parsing beyond the current minimal allowlist support
 - Add structured redaction suggestions
 - Add optional provider adapters for LLM judgement

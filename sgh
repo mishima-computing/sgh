@@ -26,6 +26,7 @@ from typing import Iterable
 
 VERSION = "0.1.0"
 DEFAULT_GH = "/usr/bin/gh"
+DEFAULT_GIT = "/usr/bin/git"
 
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 PHONE_RE = re.compile(
@@ -148,6 +149,8 @@ def unique_nonempty(items: Iterable[str]) -> list[str]:
 
 def is_allowed(span: str, allowlist: list[str]) -> bool:
     low = span.casefold()
+    if low.endswith("@users.noreply.github.com"):
+        return True
     return any(term.casefold() == low or term.casefold() in low for term in allowlist)
 
 
@@ -286,7 +289,10 @@ def collect_units(args: list[str]) -> list[ScanUnit]:
             text = read_arg_file(value) if file_backed else value
             units.append(ScanUnit(f"{label}:{name}", text))
 
-    if command == "pr":
+    if command == "git" and sub == "push":
+        units.extend(collect_git_push_units())
+
+    elif command == "pr":
         if sub in {"create", "edit"}:
             add_opts({"-t", "--title"}, "pr-title")
             add_opts({"-b", "--body"}, "pr-body")
@@ -341,6 +347,66 @@ def collect_units(args: list[str]) -> list[ScanUnit]:
     return [unit for unit in units if unit.text]
 
 
+def run_capture(command: list[str]) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except FileNotFoundError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def collect_git_push_units() -> list[ScanUnit]:
+    units: list[ScanUnit] = []
+    git = os.environ.get("SGH_REAL_GIT", DEFAULT_GIT)
+
+    branch = run_capture([git, "symbolic-ref", "--short", "HEAD"])
+    if branch:
+        units.append(ScanUnit("branch", branch))
+
+    upstream = run_capture([git, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+    if upstream:
+        rev_range = f"{upstream}..HEAD"
+    else:
+        default_branch = run_capture([git, "rev-parse", "--verify", "origin/main"])
+        rev_range = "origin/main..HEAD" if default_branch else "HEAD"
+
+    commit_format = "%H%n%an%n%ae%n%cn%n%ce%n%B%n---SGH-COMMIT---"
+    commits = run_capture([git, "log", rev_range, f"--format={commit_format}"])
+    if commits:
+        units.append(ScanUnit("git-push:commit-metadata-and-messages", commits))
+
+    names = run_capture([git, "diff", "--name-only", rev_range])
+    if names:
+        units.append(ScanUnit("git-push:changed-files", names))
+
+    diff = run_capture([git, "diff", "--unified=0", "--no-ext-diff", rev_range])
+    if diff:
+        diff = extract_added_diff_text(diff)
+        if len(diff) > 200_000:
+            diff = diff[:200_000] + "\n...[truncated by sgh]..."
+        if diff:
+            units.append(ScanUnit("git-push:diff", diff))
+
+    return units
+
+
+def extract_added_diff_text(diff: str) -> str:
+    lines: list[str] = []
+    for line in diff.splitlines():
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        lines.append(line[1:])
+    return "\n".join(lines)
+
+
 def needs_llm_review(units: list[ScanUnit]) -> bool:
     combined = "\n".join(unit.text for unit in units).casefold()
     return any(word.casefold() in combined for word in HIGH_RISK_WORDS)
@@ -383,6 +449,9 @@ def redact_text(text: str) -> str:
 
 
 def redact_command(args: list[str]) -> list[str]:
+    if args[:2] == ["git", "push"]:
+        return args
+
     redacted = ["gh"]
     body_like = {
         "-b", "--body", "-t", "--title", "--notes", "--description", "--homepage",
@@ -416,7 +485,15 @@ def print_findings(findings: list[Finding]) -> None:
     eprint("For LLM review: rerun with --llm-packet")
 
 
-def run_gh(args: list[str]) -> int:
+def run_target(args: list[str]) -> int:
+    if args[:2] == ["git", "push"]:
+        git = os.environ.get("SGH_REAL_GIT", DEFAULT_GIT)
+        try:
+            os.execv(git, [git, *args[1:]])
+        except FileNotFoundError:
+            eprint(f"sgh: real git not found: {git}")
+            return 127
+
     gh = os.environ.get("SGH_REAL_GH", DEFAULT_GH)
     try:
         os.execv(gh, [gh, *args])
@@ -429,11 +506,11 @@ def run_gh(args: list[str]) -> int:
 def parse_sgh_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         prog="sgh",
-        description="Secure wrapper for gh that scans outgoing GitHub text before publishing.",
+        description="Secure wrapper for gh and git push that scans outgoing GitHub text before publishing.",
         add_help=True,
     )
     parser.add_argument("--version", action="store_true", help="Print sgh version.")
-    parser.add_argument("--dry-run", action="store_true", help="Scan and show the gh command without executing it.")
+    parser.add_argument("--dry-run", action="store_true", help="Scan and show the target command without executing it.")
     parser.add_argument("--audit-json", action="store_true", help="Print scan result JSON.")
     parser.add_argument("--llm-packet", action="store_true", help="Print an LLM decision packet and do not execute gh.")
     parser.add_argument("--no-llm-hint", action="store_true", help="Do not warn on high-risk text that needs semantic review.")
@@ -451,8 +528,9 @@ def main(argv: list[str]) -> int:
         print(f"sgh {VERSION}")
         return 0
     if not gh_args:
-        eprint("sgh: no gh arguments supplied")
+        eprint("sgh: no arguments supplied")
         eprint("usage: sgh [--dry-run] [--llm-packet] <gh args...>")
+        eprint("       sgh git push [git push args...]")
         return 2
 
     cwd = Path.cwd()
@@ -464,7 +542,7 @@ def main(argv: list[str]) -> int:
 
     if ns.audit_json:
         print(json.dumps({
-            "command": ["gh", *gh_args],
+            "command": command_shape(gh_args),
             "scan_units": [asdict(u) for u in units],
             "findings": [asdict(f) for f in findings],
             "would_block": bool(findings),
@@ -487,10 +565,16 @@ def main(argv: list[str]) -> int:
 
     if ns.dry_run:
         print("sgh: clean")
-        print("would run:", " ".join(["gh", *[shell_quote(a) for a in gh_args]]))
+        print("would run:", " ".join(shell_quote(a) for a in command_shape(gh_args)))
         return 0
 
-    return run_gh(gh_args)
+    return run_target(gh_args)
+
+
+def command_shape(args: list[str]) -> list[str]:
+    if args[:2] == ["git", "push"]:
+        return args
+    return ["gh", *args]
 
 
 def shell_quote(value: str) -> str:
