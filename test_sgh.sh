@@ -39,6 +39,12 @@ if ! /home/terum/sgh/sgh --dry-run pr comment 1 --body "Added this feature becau
 fi
 rg -q "semantic-risk hint" /tmp/sgh-internal.txt
 
+if ! /home/terum/sgh/sgh --dry-run pr comment 1 --body "法务要求 temporary compatibility path." >/tmp/sgh-multilingual.txt 2>&1; then
+  echo "expected multilingual internal attribution hint to pass without deterministic block" >&2
+  exit 1
+fi
+rg -q "semantic-risk hint" /tmp/sgh-multilingual.txt
+
 HISTORY_FIXTURE="history-person""@""example.com"
 printf 'Contact: %s\n' "$HISTORY_FIXTURE" > historical-leak.txt
 git add historical-leak.txt

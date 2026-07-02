@@ -159,6 +159,8 @@ Internal attribution and office-politics comments are also semantic-risk signals
 
 This is an active guard, not only documentation: when `sgh` sees internal-attribution trigger words, it prints a semantic-risk hint and points the caller to `--llm-packet`. The deterministic scanner does not block these phrases by itself because this category needs context and would otherwise produce too many false positives.
 
+The LLM review instruction is language-agnostic: it asks the model to detect these risks in any language, including mixed-language text. The local trigger list is intentionally small and only used to decide when to ask for semantic review. It currently includes representative Japanese, English, Chinese, Korean, Spanish, French, and German terms for client/case data and internal attribution.
+
 ## Dogfood Test
 
 `sgh` was used to create a synthetic test repository and verify both pass and block paths. The concrete repository owner is intentionally redacted here because a personal GitHub namespace is itself identifying information:

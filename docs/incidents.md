@@ -178,6 +178,7 @@ Sources:
 
 - Treat role/person attribution phrases as semantic-risk triggers, not deterministic blocks.
 - Include `internal-attribution`, `internal-politics`, and `customer-specific-exception` categories in the LLM review instruction.
+- Ask the LLM to detect these patterns in any language, including mixed-language text. The local trigger list is only a review prompt, not the complete classifier.
 - Prefer neutral implementation rationale such as "Preserve compatibility for configured deployments" over "Added this because a named manager requested it."
 
 ## Design Requirements From These Incidents

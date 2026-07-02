@@ -46,7 +46,7 @@ RAW_FILENAME_PATTERNS = [
     "*.jsonl",
 ]
 
-HIGH_RISK_WORDS = [
+CASE_DATA_TRIGGERS = [
     "client",
     "customer",
     "customer call",
@@ -66,6 +66,23 @@ HIGH_RISK_WORDS = [
     "社内",
     "機密",
     "個人情報",
+    "客户",
+    "客戶",
+    "内部",
+    "机密",
+    "会议记录",
+    "회의록",
+    "고객",
+    "내부",
+    "confidencial",
+    "cliente",
+    "interne",
+    "client",
+    "vertraulich",
+    "kunde",
+]
+
+INTERNAL_ATTRIBUTION_TRIGGERS = [
     "部長",
     "社長",
     "役員",
@@ -90,7 +107,32 @@ HIGH_RISK_WORDS = [
     "customer-specific",
     "special case",
     "internal politics",
+    "领导",
+    "主管",
+    "经理",
+    "法务",
+    "销售",
+    "要求",
+    "指示",
+    "요청",
+    "지시",
+    "팀장",
+    "부장",
+    "법무",
+    "영업",
+    "solicitado por",
+    "pedido por",
+    "legal dijo",
+    "ventas pidió",
+    "demandé par",
+    "à la demande de",
+    "le service juridique",
+    "angefordert von",
+    "auf wunsch",
+    "rechtsabteilung",
 ]
+
+HIGH_RISK_WORDS = CASE_DATA_TRIGGERS + INTERNAL_ATTRIBUTION_TRIGGERS
 
 
 @dataclass
@@ -558,6 +600,8 @@ def llm_packet(args: list[str], units: list[ScanUnit], findings: list[Finding]) 
             "client/company names, personal contact info, meeting/transcript/case data, "
             "internal attribution such as 'requested by a named manager', internal politics, "
             "confidential context, customer-specific exceptions, or re-identifying summaries. "
+            "Detect these risks in any language, including mixed-language text, transliterated names, "
+            "job titles, departments, and culturally local ways of attributing requests or blame. "
             "Use categories such as pii, client-name, contact-info, meeting-notes, "
             "internal-attribution, internal-politics, customer-specific-exception, and reidentification-risk. "
             "Return JSON: {decision: 'allow'|'block'|'redact', findings: [...], suggested_redactions: [...]}."
