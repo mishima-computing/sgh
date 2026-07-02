@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+.leakguard/denylist.txt
+.leakguard/allowlist.txt

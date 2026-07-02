@@ -1,0 +1,503 @@
+#!/usr/bin/env python3
+"""
+sgh: secure gh wrapper.
+
+MVP goals:
+- Wrap gh with the same arguments by default.
+- Scan high-risk GitHub publish surfaces before dispatch.
+- Block deterministic PII/contact/denylist findings.
+- Emit an LLM review packet for ambiguous human/agent judgement.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Iterable
+
+
+VERSION = "0.1.0"
+DEFAULT_GH = "/usr/bin/gh"
+
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+PHONE_RE = re.compile(
+    r"(?<!\w)(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{2,4}\)?[-.\s]?){2,4}\d{3,4}(?!\w)"
+)
+CONTACT_HANDLE_RE = re.compile(
+    r"(?i)\b(?:contact|email|mail|slack|discord|twitter|x|github|連絡|メール|slack)[:：\s]+@[A-Za-z0-9_.\-]{3,}\b"
+)
+
+RAW_FILENAME_PATTERNS = [
+    "*.people.*",
+    "*never-record*",
+    "*hearing*",
+    "*minutes*",
+    "*transcript*",
+    "*議事録*",
+    "*.jsonl",
+]
+
+HIGH_RISK_WORDS = [
+    "client",
+    "customer",
+    "customer call",
+    "meeting notes",
+    "minutes",
+    "transcript",
+    "hearing",
+    "nda",
+    "internal",
+    "confidential",
+    "personally identifiable",
+    "pii",
+    "顧客",
+    "取引先",
+    "議事録",
+    "逐語録",
+    "社内",
+    "機密",
+    "個人情報",
+]
+
+
+@dataclass
+class ScanUnit:
+    location: str
+    text: str
+
+
+@dataclass
+class Finding:
+    location: str
+    span: str
+    category: str
+    confidence: float
+    reason: str
+
+
+def eprint(*args: object) -> None:
+    print(*args, file=sys.stderr)
+
+
+def find_repo_root(start: Path) -> Path:
+    cur = start.resolve()
+    for parent in [cur, *cur.parents]:
+        if (parent / ".git").exists() or (parent / ".leakguard").exists():
+            return parent
+    return cur
+
+
+def read_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        return [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+    except UnicodeDecodeError:
+        return []
+
+
+def load_policy(cwd: Path) -> tuple[list[str], list[str]]:
+    root = find_repo_root(cwd)
+    leakguard = root / ".leakguard"
+    deny = read_lines(leakguard / "denylist.txt")
+    allow = read_lines(leakguard / "allowlist.txt")
+
+    config = leakguard / "config.yaml"
+    if config.exists():
+        # Minimal YAML-ish allowlist reader. Full YAML is intentionally avoided
+        # to keep the wrapper dependency-free.
+        in_allowlist = False
+        for raw in config.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if re.match(r"^allowlist\s*:", line):
+                in_allowlist = True
+                continue
+            if in_allowlist:
+                if line.startswith("- "):
+                    allow.append(line[2:].strip().strip("\"'"))
+                    continue
+                if re.match(r"^[A-Za-z0-9_.-]+\s*:", line):
+                    in_allowlist = False
+    return unique_nonempty(deny), unique_nonempty(allow)
+
+
+def unique_nonempty(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        value = item.strip()
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def is_allowed(span: str, allowlist: list[str]) -> bool:
+    low = span.casefold()
+    return any(term.casefold() == low or term.casefold() in low for term in allowlist)
+
+
+def find_denylist(text: str, location: str, denylist: list[str], allowlist: list[str]) -> list[Finding]:
+    findings: list[Finding] = []
+    folded = text.casefold()
+    for term in denylist:
+        if is_allowed(term, allowlist):
+            continue
+        needle = term.casefold()
+        if not needle:
+            continue
+        if len(term) <= 2:
+            pattern = re.compile(rf"(?<![\w]){re.escape(term)}(?![\w])", re.IGNORECASE)
+            matches = [m.group(0) for m in pattern.finditer(text)]
+        else:
+            matches = [term] if needle in folded else []
+        for span in matches:
+            findings.append(
+                Finding(
+                    location=location,
+                    span=span,
+                    category="denylist",
+                    confidence=1.0,
+                    reason="Term appears in .leakguard/denylist.txt.",
+                )
+            )
+    return findings
+
+
+def scan_text(unit: ScanUnit, denylist: list[str], allowlist: list[str]) -> list[Finding]:
+    text = unit.text or ""
+    findings = find_denylist(text, unit.location, denylist, allowlist)
+
+    for match in EMAIL_RE.finditer(text):
+        span = match.group(0)
+        if not is_allowed(span, allowlist):
+            findings.append(
+                Finding(unit.location, span, "email", 0.99, "Personal/contact email address.")
+            )
+
+    for match in PHONE_RE.finditer(text):
+        span = match.group(0)
+        digits = re.sub(r"\D", "", span)
+        if len(digits) >= 9 and not is_allowed(span, allowlist):
+            findings.append(
+                Finding(unit.location, span, "phone", 0.9, "Possible phone number.")
+            )
+
+    for match in CONTACT_HANDLE_RE.finditer(text):
+        span = match.group(0)
+        if not is_allowed(span, allowlist):
+            findings.append(
+                Finding(unit.location, span, "contact-handle", 0.8, "Social/account handle used as contact info.")
+            )
+
+    return findings
+
+
+def risky_filename_findings(args: list[str], allowlist: list[str]) -> list[Finding]:
+    findings: list[Finding] = []
+    for arg in args:
+        name = Path(arg).name
+        for pattern in RAW_FILENAME_PATTERNS:
+            if fnmatch.fnmatch(name.casefold(), pattern.casefold()) and not is_allowed(name, allowlist):
+                findings.append(
+                    Finding(
+                        "arg:filename",
+                        arg,
+                        "raw-data-filename",
+                        0.75,
+                        f"Filename matches high-risk pattern {pattern!r}.",
+                    )
+                )
+                break
+    return findings
+
+
+def read_arg_file(path_text: str) -> str:
+    path = Path(path_text)
+    if not path.exists() or not path.is_file():
+        return ""
+    if path.stat().st_size > 512_000:
+        return f"[sgh skipped large file: {path}]"
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
+def option_value(args: list[str], names: set[str]) -> list[tuple[int, str, str]]:
+    values: list[tuple[int, str, str]] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if "=" in arg:
+            key, value = arg.split("=", 1)
+            if key in names:
+                values.append((i, key, value))
+        elif arg in names and i + 1 < len(args):
+            values.append((i, arg, args[i + 1]))
+            i += 1
+        i += 1
+    return values
+
+
+def positional_after_command(args: list[str], start: int) -> list[str]:
+    out: list[str] = []
+    skip_next = False
+    options_with_value = {
+        "-R", "--repo", "-t", "--title", "-b", "--body", "-F", "--body-file",
+        "--notes", "--notes-file", "--name", "--description", "--homepage",
+        "--discussion-category", "--target", "--base", "--head", "--label",
+        "--assignee", "--milestone", "--template", "--web",
+    }
+    for arg in args[start:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in options_with_value:
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        out.append(arg)
+    return out
+
+
+def collect_units(args: list[str]) -> list[ScanUnit]:
+    units: list[ScanUnit] = []
+    if not args:
+        return units
+
+    command = args[0]
+    sub = args[1] if len(args) > 1 else ""
+
+    def add_opts(names: set[str], label: str, file_backed: bool = False) -> None:
+        for _, name, value in option_value(args, names):
+            text = read_arg_file(value) if file_backed else value
+            units.append(ScanUnit(f"{label}:{name}", text))
+
+    if command == "pr":
+        if sub in {"create", "edit"}:
+            add_opts({"-t", "--title"}, "pr-title")
+            add_opts({"-b", "--body"}, "pr-body")
+            add_opts({"-F", "--body-file"}, "pr-body-file", file_backed=True)
+        elif sub == "comment":
+            add_opts({"-b", "--body"}, "pr-comment")
+            add_opts({"-F", "--body-file"}, "pr-comment-file", file_backed=True)
+        elif sub == "review":
+            add_opts({"-b", "--body"}, "review-comment")
+            add_opts({"-F", "--body-file"}, "review-comment-file", file_backed=True)
+
+    elif command == "issue":
+        if sub in {"create", "edit"}:
+            add_opts({"-t", "--title"}, "issue-title")
+            add_opts({"-b", "--body"}, "issue-body")
+            add_opts({"-F", "--body-file"}, "issue-body-file", file_backed=True)
+        elif sub == "comment":
+            add_opts({"-b", "--body"}, "issue-comment")
+            add_opts({"-F", "--body-file"}, "issue-comment-file", file_backed=True)
+
+    elif command == "release" and sub in {"create", "edit"}:
+        add_opts({"--title"}, "release-title")
+        add_opts({"--notes"}, "release")
+        add_opts({"--notes-file"}, "release-file", file_backed=True)
+        for pos in positional_after_command(args, 2):
+            units.append(ScanUnit("release-arg", pos))
+
+    elif command == "repo" and sub in {"create", "edit"}:
+        add_opts({"--description"}, "repo-metadata")
+        add_opts({"--homepage"}, "repo-metadata")
+        for pos in positional_after_command(args, 2)[:1]:
+            units.append(ScanUnit("repo-name", pos))
+
+    elif command == "gist" and sub in {"create", "edit"}:
+        add_opts({"-d", "--desc"}, "gist-description")
+        for pos in positional_after_command(args, 2):
+            units.append(ScanUnit("gist-arg", pos))
+            text = read_arg_file(pos)
+            if text:
+                units.append(ScanUnit(f"gist-file:{pos}", text))
+
+    elif command == "api":
+        # gh api can create comments/releases/checks via raw fields. Scan common
+        # body-ish parameters without trying to fully understand the endpoint.
+        for _, name, value in option_value(args, {"-f", "-F", "--field", "--raw-field"}):
+            if re.match(r"(?i)^(body|title|name|description|summary|text|notes)=", value):
+                key, text = value.split("=", 1)
+                units.append(ScanUnit(f"api-field:{key}", text))
+            else:
+                units.append(ScanUnit(f"api-field:{name}", value))
+
+    return [unit for unit in units if unit.text]
+
+
+def needs_llm_review(units: list[ScanUnit]) -> bool:
+    combined = "\n".join(unit.text for unit in units).casefold()
+    return any(word.casefold() in combined for word in HIGH_RISK_WORDS)
+
+
+def llm_packet(args: list[str], units: list[ScanUnit], findings: list[Finding]) -> dict:
+    redacted_units = []
+    for unit in units:
+        text = redact_text(unit.text)
+        if len(text) > 4000:
+            text = text[:4000] + "\n...[truncated by sgh]..."
+        redacted_units.append({"location": unit.location, "text": text})
+
+    payload = {
+        "tool": "sgh",
+        "version": VERSION,
+        "decision_requested": len(findings) == 0,
+        "recommended_action": "block" if findings else "ask_llm_then_continue_or_block",
+        "command_shape": redact_command(args),
+        "content_hash": hashlib.sha256(
+            "\n---\n".join(unit.location + "\n" + unit.text for unit in units).encode("utf-8")
+        ).hexdigest(),
+        "findings": [asdict(f) for f in findings],
+        "scan_units": redacted_units,
+        "llm_instruction": (
+            "Classify whether this outgoing GitHub operation leaks real person names, "
+            "client/company names, personal contact info, meeting/transcript/case data, "
+            "internal politics, confidential context, or re-identifying summaries. "
+            "Return JSON: {decision: 'allow'|'block'|'redact', findings: [...], suggested_redactions: [...]}."
+        ),
+    }
+    return payload
+
+
+def redact_text(text: str) -> str:
+    text = EMAIL_RE.sub("<email>", text)
+    text = PHONE_RE.sub("<phone>", text)
+    text = CONTACT_HANDLE_RE.sub("<contact-handle>", text)
+    return text
+
+
+def redact_command(args: list[str]) -> list[str]:
+    redacted = ["gh"]
+    body_like = {
+        "-b", "--body", "-t", "--title", "--notes", "--description", "--homepage",
+        "-d", "--desc", "--raw-field", "--field", "-f", "-F",
+    }
+    skip_value = False
+    for arg in args:
+        if skip_value:
+            redacted.append(redact_text(arg))
+            skip_value = False
+            continue
+        if "=" in arg:
+            key, value = arg.split("=", 1)
+            if key in body_like or re.match(r"(?i)^(body|title|name|description|summary|text|notes)$", key.lstrip("-")):
+                redacted.append(key + "=" + redact_text(value))
+            else:
+                redacted.append(arg)
+            continue
+        redacted.append(arg)
+        if arg in body_like:
+            skip_value = True
+    return redacted
+
+
+def print_findings(findings: list[Finding]) -> None:
+    eprint("sgh: blocked GitHub operation")
+    for f in findings:
+        eprint(f"{f.location} — {f.span} — {f.category} — {f.reason}")
+    eprint("")
+    eprint('To allowlist a public-safe term: add it to .leakguard/allowlist.txt')
+    eprint("For LLM review: rerun with --llm-packet")
+
+
+def run_gh(args: list[str]) -> int:
+    gh = os.environ.get("SGH_REAL_GH", DEFAULT_GH)
+    try:
+        os.execv(gh, [gh, *args])
+    except FileNotFoundError:
+        eprint(f"sgh: real gh not found: {gh}")
+        return 127
+    return 1
+
+
+def parse_sgh_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(
+        prog="sgh",
+        description="Secure wrapper for gh that scans outgoing GitHub text before publishing.",
+        add_help=True,
+    )
+    parser.add_argument("--version", action="store_true", help="Print sgh version.")
+    parser.add_argument("--dry-run", action="store_true", help="Scan and show the gh command without executing it.")
+    parser.add_argument("--audit-json", action="store_true", help="Print scan result JSON.")
+    parser.add_argument("--llm-packet", action="store_true", help="Print an LLM decision packet and do not execute gh.")
+    parser.add_argument("--no-llm-hint", action="store_true", help="Do not warn on high-risk text that needs semantic review.")
+    parser.add_argument("gh_args", nargs=argparse.REMAINDER)
+    ns = parser.parse_args(argv)
+    args = ns.gh_args
+    if args and args[0] == "--":
+        args = args[1:]
+    return ns, args
+
+
+def main(argv: list[str]) -> int:
+    ns, gh_args = parse_sgh_args(argv)
+    if ns.version:
+        print(f"sgh {VERSION}")
+        return 0
+    if not gh_args:
+        eprint("sgh: no gh arguments supplied")
+        eprint("usage: sgh [--dry-run] [--llm-packet] <gh args...>")
+        return 2
+
+    cwd = Path.cwd()
+    denylist, allowlist = load_policy(cwd)
+    units = collect_units(gh_args)
+    findings = risky_filename_findings(gh_args, allowlist)
+    for unit in units:
+        findings.extend(scan_text(unit, denylist, allowlist))
+
+    if ns.audit_json:
+        print(json.dumps({
+            "command": ["gh", *gh_args],
+            "scan_units": [asdict(u) for u in units],
+            "findings": [asdict(f) for f in findings],
+            "would_block": bool(findings),
+            "needs_llm_review": needs_llm_review(units),
+        }, ensure_ascii=False, indent=2))
+
+    if ns.llm_packet:
+        print(json.dumps(llm_packet(gh_args, units, findings), ensure_ascii=False, indent=2))
+        return 0 if not findings else 3
+
+    if findings:
+        print_findings(findings)
+        return 3
+
+    if units and not ns.no_llm_hint and needs_llm_review(units):
+        eprint("sgh: semantic-risk hint")
+        eprint("This operation contains words that often indicate client/case/meeting data.")
+        eprint("For agent judgement, run: sgh --llm-packet " + " ".join(shell_quote(a) for a in gh_args))
+        eprint("Continuing because no deterministic block was found.")
+
+    if ns.dry_run:
+        print("sgh: clean")
+        print("would run:", " ".join(["gh", *[shell_quote(a) for a in gh_args]]))
+        return 0
+
+    return run_gh(gh_args)
+
+
+def shell_quote(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_./:=@%+\-]+", value):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
