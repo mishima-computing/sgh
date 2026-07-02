@@ -45,6 +45,8 @@ It extracts text from command-line options such as:
 
 For `sgh git push`, it scans the outgoing branch name, commit messages, author/committer metadata, changed filenames, and outgoing diff against the upstream branch.
 
+It also blocks files that are still tracked by Git even though they match the current ignore rules. This catches the common `.gitignore` mistake where a sensitive file was committed first and ignored later.
+
 It also checks arguments for risky raw-data filenames such as `*minutes*`, `*transcript*`, `*議事録*`, and `*.jsonl`.
 
 ## What It Blocks
@@ -56,6 +58,7 @@ The MVP blocks deterministic findings:
 - likely phone numbers
 - contact handles used as contact information
 - cross-namespace personal GitHub references in publishable text
+- tracked files that match current `.gitignore` / exclude rules
 - high-risk raw-data filenames
 
 Allow public-safe terms with `.leakguard/allowlist.txt`.
@@ -411,6 +414,10 @@ Run Python syntax validation:
 ```sh
 python3 -m py_compile ./sgh
 ```
+
+## Incident Patterns
+
+See [docs/incidents.md](docs/incidents.md) for public GitHub leak patterns that inform `sgh` design, including `.gitignore` mistakes, pushed `.env` files, hard-to-clean commit history, Actions logs/artifacts, and AI context echo.
 
 ## Roadmap
 

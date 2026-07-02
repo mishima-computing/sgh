@@ -258,6 +258,26 @@ def risky_filename_findings(args: list[str], allowlist: list[str]) -> list[Findi
     return findings
 
 
+def ignored_tracked_file_findings(units: list[ScanUnit], allowlist: list[str]) -> list[Finding]:
+    findings: list[Finding] = []
+    for unit in units:
+        if unit.location != "git-push:tracked-ignored-files":
+            continue
+        for path in unit.text.splitlines():
+            if not path.strip() or is_allowed(path, allowlist):
+                continue
+            findings.append(
+                Finding(
+                    unit.location,
+                    path,
+                    "tracked-ignored-file",
+                    0.95,
+                    "File is tracked by Git even though it matches current ignore rules; remove it from the index with git rm --cached.",
+                )
+            )
+    return findings
+
+
 def read_arg_file(path_text: str) -> str:
     path = Path(path_text)
     if not path.exists() or not path.is_file():
@@ -451,6 +471,10 @@ def collect_git_push_units() -> list[ScanUnit]:
     if names:
         units.append(ScanUnit("git-push:changed-files", names))
 
+    tracked_ignored = run_capture([git, "ls-files", "-ci", "--exclude-standard"])
+    if tracked_ignored:
+        units.append(ScanUnit("git-push:tracked-ignored-files", tracked_ignored))
+
     diff = run_capture([git, "diff", "--unified=0", "--no-ext-diff", rev_range])
     if diff:
         diff = extract_added_diff_text(diff)
@@ -601,6 +625,7 @@ def main(argv: list[str]) -> int:
     denylist, allowlist = load_policy(cwd)
     units = collect_units(gh_args)
     findings = risky_filename_findings(gh_args, allowlist)
+    findings.extend(ignored_tracked_file_findings(units, allowlist))
     login = current_gh_login()
     for unit in units:
         findings.extend(scan_text(unit, denylist, allowlist))
