@@ -141,6 +141,18 @@ Generate an LLM review packet:
 sgh --llm-packet pr comment 123 --body "meeting notes about customer onboarding"
 ```
 
+Generate the recommended GitHub push ruleset JSON:
+
+```sh
+sgh ruleset-template
+```
+
+Apply it to a repository:
+
+```sh
+sgh ruleset-template --repo OWNER/REPO --apply
+```
+
 Internal attribution and office-politics comments are also semantic-risk signals. These are often not secrets in the API-key sense, but they are still poor public-code context:
 
 ```text
@@ -447,6 +459,8 @@ python3 -m py_compile ./sgh
 ## Incident Patterns
 
 See [docs/incidents.md](docs/incidents.md) for public GitHub leak patterns that inform `sgh` design, including `.gitignore` mistakes, pushed `.env` files, hard-to-clean commit history, Actions logs/artifacts, and AI context echo.
+
+See [docs/github-rulesets.md](docs/github-rulesets.md) for concrete GitHub rulesets and push-protection recommendations that complement `sgh`.
 
 ## Roadmap
 

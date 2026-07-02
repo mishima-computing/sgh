@@ -134,6 +134,43 @@ INTERNAL_ATTRIBUTION_TRIGGERS = [
 
 HIGH_RISK_WORDS = CASE_DATA_TRIGGERS + INTERNAL_ATTRIBUTION_TRIGGERS
 
+RULESET_RESTRICTED_EXTENSIONS = [
+    "env",
+    "pem",
+    "key",
+    "p12",
+    "pfx",
+    "crt",
+    "cer",
+    "sqlite",
+    "db",
+    "dump",
+    "sql",
+    "bak",
+    "jsonl",
+    "zip",
+    "tar",
+    "gz",
+    "7z",
+]
+
+RULESET_RESTRICTED_PATHS = [
+    ".env",
+    ".env.*",
+    "**/.env",
+    "**/.env.*",
+    "**/*secret*",
+    "**/*credential*",
+    "**/*token*",
+    "**/*private-key*",
+    "**/*people*",
+    "**/*transcript*",
+    "**/*minutes*",
+    "**/*hearing*",
+    "**/*never-record*",
+    "**/*議事録*",
+]
+
 
 @dataclass
 class ScanUnit:
@@ -654,6 +691,88 @@ def print_findings(findings: list[Finding]) -> None:
     eprint("For LLM review: rerun with --llm-packet")
 
 
+def default_ruleset(enforcement: str = "active") -> dict:
+    return {
+        "name": "sgh push hygiene",
+        "target": "push",
+        "enforcement": enforcement,
+        "bypass_actors": [],
+        "rules": [
+            {
+                "type": "file_extension_restriction",
+                "parameters": {
+                    "restricted_file_extensions": RULESET_RESTRICTED_EXTENSIONS,
+                },
+            },
+            {
+                "type": "file_path_restriction",
+                "parameters": {
+                    "restricted_file_paths": RULESET_RESTRICTED_PATHS,
+                },
+            },
+            {
+                "type": "max_file_size",
+                "parameters": {
+                    "max_file_size": 5,
+                },
+            },
+            {
+                "type": "max_file_path_length",
+                "parameters": {
+                    "max_file_path_length": 180,
+                },
+            },
+        ],
+    }
+
+
+def handle_ruleset_template(args: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="sgh ruleset-template",
+        description="Print or apply the recommended GitHub push ruleset JSON.",
+    )
+    parser.add_argument("--repo", help="Repository in OWNER/REPO form. Required with --apply.")
+    parser.add_argument(
+        "--enforcement",
+        choices=["active", "evaluate", "disabled"],
+        default="active",
+        help="Ruleset enforcement level. evaluate is Enterprise-only on GitHub.",
+    )
+    parser.add_argument("--apply", action="store_true", help="Create the ruleset with gh api.")
+    ns = parser.parse_args(args)
+
+    payload = default_ruleset(ns.enforcement)
+    if not ns.apply:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        if ns.repo:
+            eprint("")
+            eprint("Apply with:")
+            eprint(f"sgh ruleset-template --repo {shell_quote(ns.repo)} --apply")
+        return 0
+
+    if not ns.repo or "/" not in ns.repo:
+        eprint("sgh ruleset-template: --repo OWNER/REPO is required with --apply")
+        return 2
+    owner, repo = ns.repo.split("/", 1)
+    gh = os.environ.get("SGH_REAL_GH", DEFAULT_GH)
+    command = [
+        gh,
+        "api",
+        f"repos/{owner}/{repo}/rulesets",
+        "--method",
+        "POST",
+        "--input",
+        "-",
+    ]
+    result = subprocess.run(
+        command,
+        input=json.dumps(payload, ensure_ascii=False),
+        text=True,
+        check=False,
+    )
+    return result.returncode
+
+
 def run_target(args: list[str]) -> int:
     if args[:2] == ["git", "push"]:
         git = os.environ.get("SGH_REAL_GIT", DEFAULT_GIT)
@@ -700,7 +819,11 @@ def main(argv: list[str]) -> int:
         eprint("sgh: no arguments supplied")
         eprint("usage: sgh [--dry-run] [--llm-packet] <gh args...>")
         eprint("       sgh git push [git push args...]")
+        eprint("       sgh ruleset-template [--repo OWNER/REPO] [--apply]")
         return 2
+
+    if gh_args[0] == "ruleset-template":
+        return handle_ruleset_template(gh_args[1:])
 
     cwd = Path.cwd()
     denylist, allowlist = load_policy(cwd)

@@ -45,6 +45,21 @@ if ! /home/terum/sgh/sgh --dry-run pr comment 1 --body "法务要求 temporary c
 fi
 rg -q "semantic-risk hint" /tmp/sgh-multilingual.txt
 
+/home/terum/sgh/sgh ruleset-template >/tmp/sgh-ruleset.json
+python3 -m json.tool /tmp/sgh-ruleset.json >/dev/null
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+payload = json.loads(Path('/tmp/sgh-ruleset.json').read_text())
+assert payload['target'] == 'push'
+assert payload['enforcement'] == 'active'
+rule_types = {rule['type'] for rule in payload['rules']}
+assert 'file_extension_restriction' in rule_types
+assert 'file_path_restriction' in rule_types
+assert 'max_file_size' in rule_types
+PY
+
 HISTORY_FIXTURE="history-person""@""example.com"
 printf 'Contact: %s\n' "$HISTORY_FIXTURE" > historical-leak.txt
 git add historical-leak.txt
