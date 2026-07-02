@@ -235,6 +235,85 @@ GitHub-side verification showed that only the safe issue body and safe comment w
 }
 ```
 
+PR publication surfaces were tested on the same synthetic repository.
+
+A safe branch was pushed with `sgh git push`:
+
+```sh
+git switch -c sgh-pr-block-test
+printf "safe change for sgh PR leak test\n" > pr-safe-change.txt
+git add pr-safe-change.txt
+git commit -m "Add safe PR test change"
+sgh git push -u origin sgh-pr-block-test
+```
+
+PR creation with an email fixture in the body was blocked before the PR was created:
+
+```sh
+EMAIL_FIXTURE="person""@""example.com"
+sgh pr create \
+  --base main \
+  --head sgh-pr-block-test \
+  --title "sgh PR leak block test" \
+  --body "Contact fixture: ${EMAIL_FIXTURE}"
+```
+
+Result:
+
+```text
+sgh: blocked GitHub operation
+pr-body:--body — <synthetic-email> — email — Personal/contact email address.
+```
+
+Verification:
+
+```sh
+sgh pr list --head sgh-pr-block-test --json number,title,state --jq .
+```
+
+```json
+[]
+```
+
+A safe PR was then created:
+
+```sh
+sgh pr create \
+  --base main \
+  --head sgh-pr-block-test \
+  --title "sgh PR safe test" \
+  --body "Safe PR body for wrapper verification."
+```
+
+PR comment and PR review bodies containing the same email fixture were blocked:
+
+```sh
+EMAIL_FIXTURE="person""@""example.com"
+sgh pr comment 2 --body "Contact fixture: ${EMAIL_FIXTURE}"
+sgh pr review 2 --comment --body "Review contact fixture: ${EMAIL_FIXTURE}"
+```
+
+Results:
+
+```text
+sgh: blocked GitHub operation
+pr-comment:--body — <synthetic-email> — email — Personal/contact email address.
+
+sgh: blocked GitHub operation
+review-comment:--body — <synthetic-email> — email — Personal/contact email address.
+```
+
+GitHub-side verification showed that the safe PR body exists, but the blocked comment and review do not:
+
+```json
+{
+  "title": "sgh PR safe test",
+  "body": "Safe PR body for wrapper verification.",
+  "comments": [],
+  "reviews": []
+}
+```
+
 The README update that documented this dogfood test was committed locally, scanned, and pushed with:
 
 ```sh
