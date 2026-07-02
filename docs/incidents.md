@@ -74,6 +74,13 @@ Sources:
 
 - Prefer pre-publication blocking over remediation.
 - Make `sgh git push` a first-class path.
+- Scan each commit's added lines in the outgoing push range, not only the final diff, because a later commit can remove text that still remains in earlier commit history.
+
+Dogfood note:
+
+- An early public README version mentioned a personal test repository namespace.
+- A later commit removed it from the current README, but the earlier commits still contained the namespace.
+- This demonstrated that final-diff scanning is insufficient; push protection must scan each outgoing commit before publication.
 
 ### 4. GitHub Actions logs, summaries, and artifacts can leak secrets
 

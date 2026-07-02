@@ -467,6 +467,16 @@ def collect_git_push_units() -> list[ScanUnit]:
     if commits:
         units.append(ScanUnit("git-push:commit-metadata-and-messages", commits))
 
+    commit_ids = run_capture([git, "log", "--reverse", "--format=%H", rev_range])
+    for commit_id in commit_ids.splitlines():
+        patch = run_capture([git, "show", "--format=", "--unified=0", "--no-ext-diff", commit_id])
+        added = extract_added_diff_text(patch)
+        if not added:
+            continue
+        if len(added) > 100_000:
+            added = added[:100_000] + "\n...[truncated by sgh]..."
+        units.append(ScanUnit(f"git-push:commit:{commit_id[:12]}:added-lines", added))
+
     names = run_capture([git, "diff", "--name-only", rev_range])
     if names:
         units.append(ScanUnit("git-push:changed-files", names))

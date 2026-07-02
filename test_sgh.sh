@@ -4,9 +4,15 @@ set -euo pipefail
 ROOT="$(mktemp -d)"
 trap 'rm -rf "$ROOT"' EXIT
 cd "$ROOT"
-git init -q
-git config user.name sgh-test
-git config user.email "sgh-test""@""users.noreply.github.com"
+
+init_test_repo() {
+  rm -rf .git .gitignore .env historical-leak.txt
+  git init -q
+  git config user.name sgh-test
+  git config user.email "sgh-test""@""users.noreply.github.com"
+}
+
+init_test_repo
 mkdir -p .leakguard
 printf 'Acme Confidential\n' > .leakguard/denylist.txt
 
@@ -25,6 +31,20 @@ fi
 
 /home/terum/sgh/sgh --llm-packet pr comment 1 --body "meeting notes about customer onboarding" >/tmp/sgh-llm.json
 python3 -m json.tool /tmp/sgh-llm.json >/dev/null
+
+HISTORY_FIXTURE="history-person""@""example.com"
+printf 'Contact: %s\n' "$HISTORY_FIXTURE" > historical-leak.txt
+git add historical-leak.txt
+git commit -q -m 'Add historical fixture'
+git rm -q historical-leak.txt
+git commit -q -m 'Remove historical fixture'
+
+if /home/terum/sgh/sgh --dry-run git push >/tmp/sgh-history.txt 2>&1; then
+  echo "expected per-commit history block" >&2
+  exit 1
+fi
+
+init_test_repo
 
 printf 'fixture\n' > .env
 git add .env
