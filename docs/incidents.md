@@ -152,6 +152,34 @@ Sources:
 - Treat GitHub comments, PR descriptions, review bodies, and generated summaries as publication surfaces.
 - Provide an LLM review packet to make semantic risk explicit before posting.
 
+### 8. Internal attribution and embarrassing context leak through comments
+
+Failure mode:
+
+- Source comments, PR bodies, or GitHub discussion comments explain *who* requested a change or *why* an exception exists.
+- The text may not contain a credential or a private email address, but it can expose internal decision-making, customer-specific handling, legal/sales pressure, employee names, codenames, Slack channels, or just embarrassing context.
+- AI agents make this worse because they tend to write polished explanations from all available context.
+
+Observed public patterns:
+
+- During discussion of a GitHub source-code leak, commenters noted that internal "funny" comments were being paraded publicly and that comments written for coworkers should be treated as public once code leaks.
+- Claude Code leak analysis reported internal codenames and an "undercover" mode intended to prevent internal names, Slack channels, and product names from escaping into external repositories.
+- A public GitHub Discussion contains a direct "Legal said..." / "that's why I requested it" attribution. That example is not necessarily a leak, but it shows the exact language pattern `sgh` should send to LLM review when it appears in an organization repo or generated PR/comment text.
+- Dropbox's GitHub-related source-code incident reportedly exposed not just code and API keys, but data about employees, customers, vendors, and sales leads.
+
+Sources:
+
+- Reddit discussion of exposed source comments becoming public: <https://www.reddit.com/r/programming/comments/joa39m/github_source_code_leaked_online/>
+- Claude Code leak analysis describing internal codenames and suppression of internal names/channels in external repos: <https://read.engineerscodex.com/p/diving-into-claude-codes-source-code>
+- Public GitHub Discussion with "Legal said..." attribution language: <https://github.com/open-webui/open-webui/discussions/13818>
+- Dropbox GitHub-source incident summary mentioning employees, customers, vendors, and sales leads: <https://www.skyhighsecurity.com/about/resources/intelligence-digest/dropped-out-of-the-box-dropbox.html>
+
+`sgh` response:
+
+- Treat role/person attribution phrases as semantic-risk triggers, not deterministic blocks.
+- Include `internal-attribution`, `internal-politics`, and `customer-specific-exception` categories in the LLM review instruction.
+- Prefer neutral implementation rationale such as "Preserve compatibility for configured deployments" over "Added this because a named manager requested it."
+
 ## Design Requirements From These Incidents
 
 - Block tracked files that match current ignore rules.
@@ -160,4 +188,5 @@ Sources:
 - Scan GitHub CLI text surfaces before posting.
 - Keep deterministic blocks for high-confidence cases.
 - Use LLM judgement for semantic PII and case-data risk.
+- Use LLM judgement for internal attribution, office-politics language, and customer-specific exceptions.
 - Prefer prevention over cleanup.

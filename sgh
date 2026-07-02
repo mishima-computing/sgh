@@ -66,6 +66,30 @@ HIGH_RISK_WORDS = [
     "社内",
     "機密",
     "個人情報",
+    "部長",
+    "社長",
+    "役員",
+    "法務",
+    "営業",
+    "案件",
+    "指示",
+    "依頼",
+    "怒られ",
+    "特別扱い",
+    "暫定",
+    "政治",
+    "社内事情",
+    "requested by",
+    "requested",
+    "manager",
+    "asked by",
+    "per vp",
+    "per ceo",
+    "legal said",
+    "sales asked",
+    "customer-specific",
+    "special case",
+    "internal politics",
 ]
 
 
@@ -532,7 +556,10 @@ def llm_packet(args: list[str], units: list[ScanUnit], findings: list[Finding]) 
         "llm_instruction": (
             "Classify whether this outgoing GitHub operation leaks real person names, "
             "client/company names, personal contact info, meeting/transcript/case data, "
-            "internal politics, confidential context, or re-identifying summaries. "
+            "internal attribution such as 'requested by a named manager', internal politics, "
+            "confidential context, customer-specific exceptions, or re-identifying summaries. "
+            "Use categories such as pii, client-name, contact-info, meeting-notes, "
+            "internal-attribution, internal-politics, customer-specific-exception, and reidentification-risk. "
             "Return JSON: {decision: 'allow'|'block'|'redact', findings: [...], suggested_redactions: [...]}."
         ),
     }
@@ -660,7 +687,7 @@ def main(argv: list[str]) -> int:
 
     if units and not ns.no_llm_hint and needs_llm_review(units):
         eprint("sgh: semantic-risk hint")
-        eprint("This operation contains words that often indicate client/case/meeting data.")
+        eprint("This operation contains words that often indicate client/case/meeting data or internal attribution.")
         eprint("For agent judgement, run: sgh --llm-packet " + " ".join(shell_quote(a) for a in gh_args))
         eprint("Continuing because no deterministic block was found.")
 

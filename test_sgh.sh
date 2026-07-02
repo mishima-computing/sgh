@@ -31,6 +31,13 @@ fi
 
 /home/terum/sgh/sgh --llm-packet pr comment 1 --body "meeting notes about customer onboarding" >/tmp/sgh-llm.json
 python3 -m json.tool /tmp/sgh-llm.json >/dev/null
+rg -q "internal-attribution" /tmp/sgh-llm.json
+
+if ! /home/terum/sgh/sgh --dry-run pr comment 1 --body "Added this feature because a named manager requested it." >/tmp/sgh-internal.txt 2>&1; then
+  echo "expected internal attribution hint to pass without deterministic block" >&2
+  exit 1
+fi
+rg -q "semantic-risk hint" /tmp/sgh-internal.txt
 
 HISTORY_FIXTURE="history-person""@""example.com"
 printf 'Contact: %s\n' "$HISTORY_FIXTURE" > historical-leak.txt

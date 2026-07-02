@@ -141,6 +141,24 @@ Generate an LLM review packet:
 sgh --llm-packet pr comment 123 --body "meeting notes about customer onboarding"
 ```
 
+Internal attribution and office-politics comments are also semantic-risk signals. These are often not secrets in the API-key sense, but they are still poor public-code context:
+
+```text
+// Added this path because a named manager requested it.
+// Special case for a specific customer escalation.
+// Legal said to disable this for now.
+```
+
+`sgh` treats phrases like these as LLM-review candidates under categories such as `internal-attribution`, `internal-politics`, and `customer-specific-exception`. Prefer neutral implementation rationale:
+
+```text
+// Preserve compatibility for configured deployments.
+// Keep legacy behavior for existing workflows.
+// Temporarily disabled until policy handling is finalized.
+```
+
+This is an active guard, not only documentation: when `sgh` sees internal-attribution trigger words, it prints a semantic-risk hint and points the caller to `--llm-packet`. The deterministic scanner does not block these phrases by itself because this category needs context and would otherwise produce too many false positives.
+
 ## Dogfood Test
 
 `sgh` was used to create a synthetic test repository and verify both pass and block paths. The concrete repository owner is intentionally redacted here because a personal GitHub namespace is itself identifying information:
@@ -232,6 +250,15 @@ sgh --llm-packet issue comment 1 \
 ```
 
 Result: `sgh` emitted an LLM review packet and did not publish the comment.
+
+Internal attribution fixture:
+
+```sh
+sgh --llm-packet pr comment 123 \
+  --body "Added this feature because a named manager requested it."
+```
+
+Result: `sgh` emits an LLM review packet with instructions to classify internal attribution, internal politics, and customer-specific exceptions.
 
 GitHub-side verification showed that only the safe issue body and safe comment were present:
 
