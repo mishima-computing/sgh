@@ -160,7 +160,7 @@ sgh repo create <owner>/sgh-leak-test \
   --push
 ```
 
-Current `sgh` versions should flag that personal owner if it appears in publishable text from a different owner or organization repository. Personal repositories can still use their own personal namespace.
+Current `sgh` versions should flag that personal owner if it appears in publishable text from a different owner or organization repository. Personal repositories can still use their own personal namespace. In this case the account name was public, so it was not a secret leak. It was still the kind of sloppy, slightly embarrassing context leak that an organization README should not carry around. That counts too.
 
 A safe issue was published:
 
