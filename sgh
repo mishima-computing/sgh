@@ -210,6 +210,35 @@ def scan_text(unit: ScanUnit, denylist: list[str], allowlist: list[str]) -> list
     return findings
 
 
+def scan_personal_namespace(unit: ScanUnit, login: str, allowlist: list[str]) -> list[Finding]:
+    if not login or is_allowed(login, allowlist):
+        return []
+    if unit.location == "repo-name":
+        return []
+
+    repo_owner = current_repo_owner()
+    if not repo_owner or repo_owner.casefold() == login.casefold():
+        return []
+
+    patterns = [
+        re.compile(rf"(?<![\w.-]){re.escape(login)}/[A-Za-z0-9_.-]+(?![\w.-])"),
+        re.compile(rf"https://github\.com/{re.escape(login)}/[A-Za-z0-9_.-]+", re.IGNORECASE),
+    ]
+    findings: list[Finding] = []
+    for pattern in patterns:
+        for match in pattern.finditer(unit.text):
+            findings.append(
+                Finding(
+                    unit.location,
+                    match.group(0),
+                    "cross-namespace-personal-reference",
+                    0.9,
+                    f"Authenticated personal GitHub namespace appears while working in {repo_owner!r}.",
+                )
+            )
+    return findings
+
+
 def risky_filename_findings(args: list[str], allowlist: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     for arg in args:
@@ -361,6 +390,41 @@ def run_capture(command: list[str]) -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def current_gh_login() -> str:
+    gh = os.environ.get("SGH_REAL_GH", DEFAULT_GH)
+    try:
+        result = subprocess.run(
+            [gh, "api", "user", "--jq", ".login"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def current_repo_owner() -> str:
+    git = os.environ.get("SGH_REAL_GIT", DEFAULT_GIT)
+    remote = run_capture([git, "remote", "get-url", "origin"])
+    if not remote:
+        return ""
+
+    patterns = [
+        r"^https://github\.com/([^/]+)/[^/]+(?:\.git)?$",
+        r"^git@github\.com:([^/]+)/[^/]+(?:\.git)?$",
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, remote)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def collect_git_push_units() -> list[ScanUnit]:
@@ -537,8 +601,10 @@ def main(argv: list[str]) -> int:
     denylist, allowlist = load_policy(cwd)
     units = collect_units(gh_args)
     findings = risky_filename_findings(gh_args, allowlist)
+    login = current_gh_login()
     for unit in units:
         findings.extend(scan_text(unit, denylist, allowlist))
+        findings.extend(scan_personal_namespace(unit, login, allowlist))
 
     if ns.audit_json:
         print(json.dumps({

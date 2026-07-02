@@ -55,9 +55,12 @@ The MVP blocks deterministic findings:
 - likely email addresses
 - likely phone numbers
 - contact handles used as contact information
+- cross-namespace personal GitHub references in publishable text
 - high-risk raw-data filenames
 
 Allow public-safe terms with `.leakguard/allowlist.txt`.
+
+By default, `sgh` asks `gh` for the authenticated login and compares it with the current repository owner. A personal namespace such as `<personal-login>/repo-name` is allowed when you are publishing from that same personal namespace, and as the direct target of `gh repo create`. It is flagged when it appears in publishable text from a different owner or organization repository. This catches a common dogfood failure: organization documentation accidentally mentioning an individual's GitHub account.
 
 ## What It Does Not Do Yet
 
@@ -137,22 +140,24 @@ sgh --llm-packet pr comment 123 --body "meeting notes about customer onboarding"
 
 ## Dogfood Test
 
-`sgh` was used to create a synthetic test repository and verify both pass and block paths:
+`sgh` was used to create a synthetic test repository and verify both pass and block paths. The concrete repository owner is intentionally redacted here because a personal GitHub namespace is itself identifying information:
 
 ```text
-https://github.com/teru-murata/sgh-leak-test
+https://github.com/<owner>/sgh-leak-test
 ```
 
-The repository was created through `sgh`:
+The repository was originally created through `sgh`:
 
 ```sh
-sgh repo create teru-murata/sgh-leak-test \
+sgh repo create <owner>/sgh-leak-test \
   --private \
   --description "Synthetic test repository for sgh checks" \
   --source . \
   --remote origin \
   --push
 ```
+
+Current `sgh` versions should flag that personal owner if it appears in publishable text from a different owner or organization repository. Personal repositories can still use their own personal namespace.
 
 A safe issue was published:
 
