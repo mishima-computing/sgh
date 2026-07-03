@@ -36,6 +36,39 @@ CONTACT_HANDLE_RE = re.compile(
     r"(?i)\b(?:contact|email|mail|slack|discord|twitter|x|github|連絡|メール|slack)[:：\s]+@[A-Za-z0-9_.\-]{3,}\b"
 )
 
+# --- false-positive suppression (fed back from real usage) ---
+# System (non-personal) mailboxes are not personal contact info.
+_SYSTEM_EMAIL_RE = re.compile(
+    r"(?i)^(?:no[-_]?reply|do[-_]?not[-_]?reply|donotreply|postmaster|mailer-daemon)@"
+)
+
+
+def _is_system_email(span: str) -> bool:
+    return bool(_SYSTEM_EMAIL_RE.match(span)) or span.lower().endswith(
+        "@users.noreply.github.com"
+    )
+
+
+# Numeric strings that are academic/document IDs (arXiv/DOI/ISBN/hdl/gov doc numbers),
+# usually sitting inside a URL or citation — not phone numbers.
+_CITATION_CONTEXT_RE = re.compile(
+    r"(?i)https?://|www\.|\.pdf|\.html?|arxiv|doi|isbn|hdl\.|handle\.net"
+)
+_ARXIV_ID_RE = re.compile(r"\d{4}\.\d{4,5}")
+
+
+def _looks_like_non_phone_number(span: str, context: str) -> bool:
+    if _CITATION_CONTEXT_RE.search(context):
+        return True
+    # strip surrounding punctuation (e.g. "(1803.05969)") before shape-matching
+    if _ARXIV_ID_RE.fullmatch(re.sub(r"[^\d.]", "", span)):
+        return True
+    digits = re.sub(r"\D", "", span)
+    if len(digits) >= 12:  # ISBN-13 / long doc IDs; phone numbers are <= 11 digits
+        return True
+    return False
+
+
 RAW_FILENAME_PATTERNS = [
     "*.people.*",
     "*never-record*",
@@ -290,6 +323,8 @@ def scan_text(unit: ScanUnit, denylist: list[str], allowlist: list[str]) -> list
 
     for match in EMAIL_RE.finditer(text):
         span = match.group(0)
+        if _is_system_email(span):
+            continue
         if not is_allowed(span, allowlist):
             findings.append(
                 Finding(unit.location, span, "email", 0.99, "Personal/contact email address.")
@@ -299,6 +334,17 @@ def scan_text(unit: ScanUnit, denylist: list[str], allowlist: list[str]) -> list
         span = match.group(0)
         digits = re.sub(r"\D", "", span)
         if len(digits) >= 9 and not is_allowed(span, allowlist):
+            # Widen to the whitespace-delimited token: URLs/citations have no spaces,
+            # so a number embedded in a (possibly long) URL is captured regardless of length.
+            start, end = match.span()
+            tstart, tend = start, end
+            while tstart > 0 and not text[tstart - 1].isspace():
+                tstart -= 1
+            while tend < len(text) and not text[tend].isspace():
+                tend += 1
+            token = text[tstart:tend]
+            if _looks_like_non_phone_number(span, token):
+                continue
             findings.append(
                 Finding(unit.location, span, "phone", 0.9, "Possible phone number.")
             )
